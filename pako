@@ -1,0 +1,88 @@
+#!/usr/bin/env python
+
+import sys, argparse, zmq
+
+
+TYPES = dict(pull=zmq.PULL, push=zmq.PUSH,
+             pub=zmq.PUB, sub=zmq.SUB)
+
+def main(argv, types=TYPES):
+    opts = parse_cli(argv[1:], types)
+    ctx = zmq.Context.instance()
+    type = types[opts.type.lower()]
+    socket = ctx.socket(type)
+
+    if opts.hwm is not None:
+        socket.set_hwm(opts.hwm)
+
+    for endpoint in opts.endpoints:
+        if '*' in endpoint:
+            socket.bind(endpoint)
+        else:
+            socket.connect(endpoint)
+
+    if type == zmq.SUB:
+        socket.setsockopt(zmq.SUBSCRIBE, opts.topic)
+
+    if opts.multipart:
+        opts.multipart = opts.multipart.encode('utf8')
+
+    if type in (zmq.PUSH, zmq.PUB):
+        produce(socket, sender(opts.multipart))
+    else:
+        for entry in consume(socket, receiver(opts.multipart)):
+            print(entry.decode('utf8'))
+    return 0
+
+
+def consume(socket, receive):
+    while True:
+        data = receive(socket)
+        if not data:
+            break
+        yield data
+
+def produce(socket, send):
+    while True:
+        line = sys.stdin.readline().rstrip()
+        if not line:
+            break
+        send(socket, line)
+
+def receiver(multipart=None):
+    if multipart is not None:
+        def receive(socket):
+            return multipart.join(socket.recv_multipart())
+        return receive
+    return zmq.Socket.recv_string
+
+
+def sender(multipart=None):
+    if multipart is not None:
+        def send(socket, entry):
+            return socket.send_multipart(entry.split(multipart))
+        return send
+    return zmq.Socket.send_string
+
+
+def parse_cli(args, types):
+    parser = argparse.ArgumentParser(description='zmqpp-like tool for python')
+    add = parser.add_argument
+    add('-t', '--type', choices=types,
+        help='socket type')
+    add('-m', '--multipart', metavar='SEPARATOR',
+        help='use multipart send/receive')
+    add('--hwm', type=int,
+        help='set the high water mark for recv/send operations')
+    add('--topic', default=b'',
+        help='topic to subscribe to for sub sockets (%(default)r)')
+    add('endpoints', nargs='+', metavar='endpoint',
+        help='zmq endpoints')
+    return parser.parse_args(args)
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        pass
+
